@@ -1,98 +1,64 @@
 # -*- coding:utf-8 -*-
-import  os
-import  tensorflow as tf
-from    tensorflow.keras import optimizers
+import os
+import tensorflow as tf
 from models.seq2seq_gru import Encoder, Decoder
 from datasets.cmn_eng import cmn_eng_dataset
 from show_pic import draw
-from tensorflow import keras
+from Train import train_one_epoch
+from tensorflow.compat.v1 import ConfigProto
+from tensorflow.compat.v1 import InteractiveSession
 
-model_dataset = 'seq2seq_gru_cmn_eng'
-root = '/home/tigerc/temp'
-
-# @tf.function
-# def compute_loss(pred, real):
-#     return tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(real, pred))
-@tf.function
-def compute_loss(real, pred):
-    real = tf.math.argmax(real, axis=-1)
-    mask = tf.math.logical_not(tf.math.equal(real, 0))
-    loss_ = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)(real, pred)
-    mask = tf.cast(mask, dtype=loss_.dtype)
-    loss_ *= mask
-
-    return tf.reduce_mean(loss_)
-
-def train_one_step(models, optimizer, x, y):
-    encoder = models[0]
-    decoder = models[1]
-    with tf.GradientTape() as tape:
-        # watch will make these tensors traced by gradient
-        tape.watch(encoder.trainable_variables)
-        tape.watch(decoder.trainable_variables)
-        encoder_output, encoder_state = encoder(x)
-        decoder_input = tf.expand_dims(y[:, 0], 1)
-        decoder_state = encoder_state
-        loss=0
-        for t in range(1, y.shape[1]):
-            predictions, decoder_state = decoder(decoder_input, decoder_state)
-            loss += compute_loss(y[:, t], predictions)
-            decoder_input = tf.expand_dims(y[:, t], 1)
-    variables = encoder.trainable_variables + decoder.trainable_variables
-    grads = tape.gradient(loss, variables)
-    # print('loss: ', loss/(y.shape[1]-1), 'grads: ', grads)
-    optimizer.apply_gradients(zip(grads, variables))
-    return loss.numpy()/(y.shape[1]-1)
-
-def train(epoch,  pic, models, dataset, optimizer):
-  train_ds = dataset.train_dataset()
-  loss = 0.0
-  accuracy = 0.0
-  for step, ((x1, x2), y) in enumerate(train_ds):
-    loss = train_one_step(models, optimizer, x1, x2)
-    pic.add([loss, accuracy])
-    pic.save(root + '/temp_pic_save/'+model_dataset)
-    if step%500==0:
-      # loss, accuracy = test(model, train_dv)
-      print('epoch', epoch, ': loss', loss, '; accuracy', accuracy)
-  print('epoch', epoch, ': loss', loss, '; accuracy', accuracy)
+ubuntu_root='/home/tigerc/temp'
+windows_root='D:/Automatic/SRTP/GAN/temp'
+model_dataset = 'seq2seq_gru_1_cmn_eng'
+root = ubuntu_root
 
 def main():
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # or any {'0', '1', '2'}
     if not (os.path.exists(root + '/temp_pic/' + model_dataset)):
         os.makedirs(root + '/temp_pic/' + model_dataset)
-    if not (os.path.exists(root + '/temp_model_save/' + model_dataset)):
-        os.makedirs(root + '/temp_model_save/' + model_dataset)
     if not (os.path.exists(root + '/temp_pic_save/' + model_dataset)):
         os.makedirs(root + '/temp_pic_save/' + model_dataset)
     if not(os.path.exists(root + '/temp_txt_save/'+model_dataset)):
         os.makedirs(root + '/temp_txt_save/'+model_dataset)
-
     pic = draw(10)
     if not(os.path.exists(root+'/temp_txt_save/'+model_dataset+'/validation.txt')):
         txt = open(root+'/temp_txt_save/'+model_dataset+'/validation.txt','w')
     else:
         txt = open(root+'/temp_txt_save/'+model_dataset+'/validation.txt', 'a')
     dataset = cmn_eng_dataset()
+    train_dataset = dataset.train_dataset()
+
+    optimizer = tf.keras.optimizers.Adam()
 
     encoder = Encoder(num_encoder_tokens=dataset.num_encoder_tokens, embedding_dim=128, latent_dim=dataset.latent_dim)
     decoder = Decoder(num_decoder_tokense=dataset.num_decoder_tokens, embedding_dim=128, latent_dim=dataset.latent_dim)
-    optimizer = optimizers.Adam()
 
-    checkpoint = tf.train.Checkpoint(optimizer=optimizer,
-                                     encoder=encoder,
-                                     decoder=decoder)
-    checkpoint_dir = root + '/temp_model_save/' + model_dataset
-    checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt")
-    # if os.path.isdir(checkpoint_dir):
-    #    checkpoint.restore(tf.train.latest_checkpoint(checkpoint_dir))
+    checkpoint_path = root + '/temp_model_save/' + model_dataset
+    ckpt = tf.train.Checkpoint(optimizer=optimizer,encoder=encoder,decoder=decoder)
+    ckpt_manager = tf.train.CheckpointManager(ckpt, checkpoint_path, max_to_keep=5)
+
+    if ckpt_manager.latest_checkpoint:
+        ckpt.restore(ckpt_manager.latest_checkpoint)
+        print('Latest checkpoint restored!!')
+
+    train_loss = tf.keras.metrics.Mean(name='train_loss')
+    train_accuracy = tf.keras.metrics.SparseCategoricalAccuracy(name='train_accuracy')
+
+    train = train_one_epoch(encoder=encoder, decoder=decoder, train_dataset=train_dataset, optimizer=optimizer, metrics=[train_loss, train_accuracy])
+    print('start training')
     for epoch in range(10):
-        train(models=[encoder, decoder], dataset=dataset, epoch=epoch,  pic=pic, optimizer=optimizer)
+        train.train(epoch=epoch, pic=pic)
         pic.show(root+'/temp_pic/' + model_dataset + '/pic')
-        checkpoint.save(file_prefix=checkpoint_prefix)
-    dataset.test([encoder, decoder], txt)
+        if (epoch + 1) % 5 == 0:
+            ckpt_manager.save()
     txt.close()
     return
 
 if __name__ == '__main__':
+    config = ConfigProto()
+    config.gpu_options.allow_growth = True
+    session = InteractiveSession(config=config)
+
     main()
+
